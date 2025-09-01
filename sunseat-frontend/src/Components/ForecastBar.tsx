@@ -1,5 +1,3 @@
-import React from "react";
-
 type ForecastPoint = { tmin: number; score: number };
 
 function clamp(n: number, min: number, max: number) {
@@ -41,7 +39,7 @@ export default function ForecastBar({
               isSel ? "forecast__bar--selected" : ""
             }`}
             data-c={hue}
-            style={{ ["--h" as any]: `${h}px` }}
+            style={{ ["--h" as string]: `${h}px` }}
             onClick={() => onSelect?.(f.tmin)}
             onMouseDown={(e) => onSelect && e.preventDefault()}
           />

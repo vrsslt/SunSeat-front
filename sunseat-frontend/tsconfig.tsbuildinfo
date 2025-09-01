@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/leaflet.ts","./src/main.tsx","./src/types.ts","./src/vite-env.d.ts","./src/components/forecastbar.tsx","./src/components/mapview.tsx","./src/components/terracecard.tsx","./src/lib/api.ts","./src/lib/sun.ts"],"errors":true,"version":"5.8.3"}

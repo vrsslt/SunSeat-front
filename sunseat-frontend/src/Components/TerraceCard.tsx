@@ -1,4 +1,3 @@
-import React from "react";
 import type { NearbyItem } from "../types";
 import ForecastBar from "./ForecastBar";
 

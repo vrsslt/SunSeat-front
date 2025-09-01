@@ -117,7 +117,7 @@ export default function App() {
   const [items, setItems] = useState<NearbyItem[]>([]);
   const [center, setCenter] = useState<[number, number]>([48.8566, 2.3522]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [, setError] = useState<string | null>(null);
   const [currentCity, setCurrentCity] = useState<string>("Ma position");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchLoading, setSearchLoading] = useState(false);
