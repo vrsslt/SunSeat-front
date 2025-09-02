@@ -88,6 +88,7 @@ const TEST_CITIES = [
 ];
 
 export default function App() {
+  console.log("APP VERSION: 2024-01-15-v2"); // Change la date/version
   const [items, setItems] = useState<NearbyItem[]>([]);
   const [center, setCenter] = useState<[number, number]>([48.8566, 2.3522]);
   const [loading, setLoading] = useState(false);
