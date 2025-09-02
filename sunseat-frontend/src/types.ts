@@ -8,4 +8,8 @@ export type NearbyItem = {
   distance_m: number;
   sunScore: number;
   forecast?: { tmin: number; score: number }[];
+  amenity?: string;
+  website?: string;
+  phone?: string;
+  opening_hours?: string;
 };
