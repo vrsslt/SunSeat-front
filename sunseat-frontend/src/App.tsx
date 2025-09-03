@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import type { FormEvent } from "react";
 import { api } from "./lib/api";
 import type { NearbyItem } from "./types";
 import MapView from "./Components/MapView";
@@ -45,6 +46,21 @@ function normalizeItem(item: any): NearbyItem {
           score: clamp(toNum(f?.score, 0), 0, 100),
         }))
       : undefined,
+
+    hasOutdoor: !!item.hasOutdoor,
+    terraceConfidence:
+      typeof item.terraceConfidence === "number"
+        ? item.terraceConfidence
+        : undefined,
+    terraceEvidence: Array.isArray(item.terraceEvidence)
+      ? item.terraceEvidence
+      : undefined,
+
+    cuisine: item.cuisine,
+    opening_hours: item.opening_hours,
+    website: item.website,
+    phone: item.phone,
+    outdoor_seating: item.outdoor_seating,
   };
 }
 
@@ -73,10 +89,10 @@ function radiusFromBounds(bounds: Bounds, center: [number, number]): number {
   const r = Math.max(
     ...corners.map(([lat, lon]) => distMeters(center[0], center[1], lat, lon))
   );
-  return Math.round(r * 1.05); // petit padding
+  return Math.round(r * 1.05);
 }
 
-// Score à t + minutes (interpolation linéaire sur forecast)
+// Score à t + minutes
 function scoreAt(item: NearbyItem, minutes: number): number {
   const now = clamp(toNum(item.sunScore, 0), 0, 100);
   if (!Array.isArray(item.forecast) || minutes <= 0) return now;
@@ -99,10 +115,10 @@ function scoreAt(item: NearbyItem, minutes: number): number {
     }
     prev = p;
   }
-  return prev.s; // au-delà du dernier point
+  return prev.s;
 }
 
-// Geocoding Nominatim
+// Geocoding
 async function searchLocation(
   query: string
 ): Promise<{ lat: number; lon: number; display_name: string } | null> {
@@ -122,8 +138,7 @@ async function searchLocation(
       };
     }
     return null;
-  } catch (error) {
-    console.error("Geocoding error:", error);
+  } catch {
     return null;
   }
 }
@@ -150,21 +165,42 @@ export default function App() {
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
 
+  const handleSearch = async (_e: FormEvent<HTMLFormElement>) => {
+    try {
+      setSearchLoading(true);
+      setSearchError(null);
+      const res = await searchLocation(searchQuery.trim());
+      if (!res) {
+        setSearchError("Aucun résultat");
+        return;
+      }
+      setCenter([res.lat, res.lon]);
+      setCurrentCity(res.display_name);
+      setSelectedId(null);
+      await load(res.lat, res.lon, res.display_name);
+    } catch {
+      setSearchError("Erreur de recherche");
+    } finally {
+      setSearchLoading(false);
+    }
+  };
+
   // Auto-refresh
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
-  // Filtre soleil (>60%)
+  // Filtres
   const [minScore, setMinScore] = useState<number>(0);
+  const [onlyOutdoor, setOnlyOutdoor] = useState<boolean>(false);
 
-  // Zone précise (bounds → radius)
+  // Bounds → radius
   const [mapBounds, setMapBounds] = useState<Bounds | null>(null);
   const [radius, setRadius] = useState<number>(1500);
 
   // Sélection carte
   const [selectedId, setSelectedId] = useState<number | string | null>(null);
 
-  // Sun slider (0..120 minutes)
+  // Sun slider (0..120)
   const [tOffset, setTOffset] = useState<number>(0);
 
   // Golden Hour
@@ -172,13 +208,22 @@ export default function App() {
   const [goldenStart, setGoldenStart] = useState<Date | null>(null);
   const [goldenEnd, setGoldenEnd] = useState<Date | null>(null);
 
-  // Météo légère pour le badge Confort
+  // Météo (confort)
   const [weather, setWeather] = useState<{
     temp_c: number | null;
     wind_ms: number | null;
   } | null>(null);
 
-  // Boot depuis URL (deep link)
+  // Heatmap UI
+  const [showHeatmap, setShowHeatmap] = useState<boolean>(true);
+  const [heatRadius, setHeatRadius] = useState<number>(160); // m
+  const [heatOpacity, setHeatOpacity] = useState<number>(70); // pour slider (0..100), converti en 0..1
+
+  // Mode carte & sonde
+  const [mapMode, setMapMode] = useState<"bubbles" | "heat">("bubbles");
+  const [probe, setProbe] = useState<boolean>(true);
+
+  // Boot via deep link ?
   const [bootFromURL, setBootFromURL] = useState(false);
 
   const load = async (
@@ -190,22 +235,19 @@ export default function App() {
     setLoading(true);
     setError(null);
     if (cityName) setCurrentCity(cityName);
-
     const r = rOverride ?? radius ?? 1500;
 
     try {
       const { data } = await api.get<NearbyItem[]>("/terraces/nearby", {
-        params: { lat, lon, radius: r, forecast: true }, // slider & golden
+        params: { lat, lon, radius: r, forecast: true },
       });
-
-      const normalizedData = Array.isArray(data) ? data.map(normalizeItem) : [];
-      setItems(normalizedData);
+      const normalized = Array.isArray(data) ? data.map(normalizeItem) : [];
+      setItems(normalized);
       setRadius(r);
       setLastUpdate(new Date());
     } catch (err: any) {
-      console.error("API Error:", err);
+      console.error("API Error:", err?.message);
       setError(err?.message || "Erreur lors du chargement");
-      // fallback démo
       setItems([
         {
           id: 1,
@@ -216,6 +258,9 @@ export default function App() {
           streetWidth: "medium",
           distance_m: 120,
           sunScore: 78,
+          hasOutdoor: true,
+          terraceConfidence: 0.9,
+          terraceEvidence: ["demo"],
           forecast: [0, 15, 30, 45, 60, 90, 120].map((m) => ({
             tmin: m,
             score: Math.max(0, 78 - Math.floor(m / 15) * 5),
@@ -227,7 +272,7 @@ export default function App() {
     }
   };
 
-  // Lecture des query params au boot (deep link)
+  // Deep link (lecture)
   useEffect(() => {
     try {
       const p = new URLSearchParams(window.location.search);
@@ -238,7 +283,6 @@ export default function App() {
       const pmin = parseInt(p.get("min") || "0", 10);
 
       let booted = false;
-
       if (Number.isFinite(plat) && Number.isFinite(plon)) {
         setCenter([plat, plon]);
         load(plat, plon);
@@ -251,7 +295,6 @@ export default function App() {
         const parsed = /^\d+$/.test(pid) ? Number(pid) : pid;
         setSelectedId(parsed);
       }
-
       setBootFromURL(booted);
     } catch {
       setBootFromURL(false);
@@ -259,20 +302,18 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-refresh 2 min
+  // Auto-refresh
   useEffect(() => {
-    let interval: ReturnType<typeof setInterval> | undefined;
+    let interval;
     if (autoRefresh) {
       interval = setInterval(() => {
         load(center[0], center[1], currentCity);
       }, 2 * 60 * 1000);
     }
-    return () => {
-      if (interval) clearInterval(interval);
-    };
+    return () => interval && clearInterval(interval);
   }, [autoRefresh, center, currentCity]);
 
-  // Init géoloc (skip si boot depuis URL)
+  // Init géoloc (si pas boot URL)
   useEffect(() => {
     if (bootFromURL) return;
     if (navigator.geolocation) {
@@ -292,7 +333,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bootFromURL]);
 
-  // Golden Hour (recalc à chaque déplacement + aligne le slider si activé)
+  // Golden Hour
   useEffect(() => {
     const { start, end } = computeGoldenWindow(
       new Date(),
@@ -304,12 +345,11 @@ export default function App() {
     if (goldenEnabled) {
       const target =
         start && end ? new Date((start.getTime() + end.getTime()) / 2) : start;
-      const bucket = minutesBucketTo(target);
-      setTOffset(bucket);
+      setTOffset(minutesBucketTo(target));
     }
   }, [center, goldenEnabled]);
 
-  // Météo Open-Meteo (temp + vent) pour ComfortChip
+  // Météo Open-Meteo
   useEffect(() => {
     (async () => {
       try {
@@ -328,31 +368,37 @@ export default function App() {
     })();
   }, [center]);
 
-  // Applique le temps sélectionné → override sunScore (propagé partout)
-  const timeAdjusted = useMemo(() => {
-    return items.map((it) => ({
-      ...it,
-      sunScore: scoreAt(it, tOffset),
-    }));
-  }, [items, tOffset]);
+  // Override score avec tOffset
+  const timeAdjusted = useMemo(
+    () => items.map((it) => ({ ...it, sunScore: scoreAt(it, tOffset) })),
+    [items, tOffset]
+  );
 
-  // Tri + filtrage (sur scores ajustés)
+  // tri
   const sorted = useMemo(() => {
-    const validItems = timeAdjusted.filter(
-      (item) => item && typeof item === "object"
-    );
-    return [...validItems].sort((a, b) => {
-      const scoreA = toNum(a.sunScore, 0);
-      const scoreB = toNum(b.sunScore, 0);
-      if (scoreB !== scoreA) return scoreB - scoreA;
+    const valid = timeAdjusted.filter((i) => i && typeof i === "object");
+    return [...valid].sort((a, b) => {
+      const sa = toNum(a.sunScore, 0);
+      const sb = toNum(b.sunScore, 0);
+      if (sb !== sa) return sb - sa;
       return toNum(a.distance_m, Infinity) - toNum(b.distance_m, Infinity);
     });
   }, [timeAdjusted]);
 
+  // filtres
   const displayed = useMemo(() => {
     const thr = minScore || 0;
-    return sorted.filter((t) => toNum(t.sunScore, 0) >= thr);
-  }, [sorted, minScore]);
+    return sorted
+      .filter((t) => toNum(t.sunScore, 0) >= thr)
+      .filter((t) => (onlyOutdoor ? !!t.hasOutdoor : true));
+  }, [sorted, minScore, onlyOutdoor]);
+
+  // Si l'URL a un id et que les items arrivent après, on recadre
+  useEffect(() => {
+    if (selectedId == null || !items.length) return;
+    const it = items.find((x) => String(x.id) === String(selectedId));
+    if (it) setCenter([it.lat, it.lon]);
+  }, [items, selectedId]);
 
   // Actions
   const recenterToMe = () => {
@@ -366,44 +412,14 @@ export default function App() {
       });
     }
   };
-
-  // Recherche textuelle
-  const handleSearch = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!searchQuery.trim()) return;
-    setSearchLoading(true);
-    setSearchError(null);
-
-    try {
-      const result = await searchLocation(searchQuery);
-      if (result) {
-        const newCoords: [number, number] = [result.lat, result.lon];
-        setCenter(newCoords);
-        setCurrentCity(searchQuery);
-        setSelectedId(null);
-        await load(result.lat, result.lon, searchQuery, 1500); // reset radius
-      } else {
-        setSearchError("Lieu non trouvé");
-      }
-    } catch {
-      setSearchError("Erreur de recherche");
-    } finally {
-      setSearchLoading(false);
-    }
-  };
-
   const refreshHere = () => load(center[0], center[1], currentCity);
   const testCity = (city: (typeof TEST_CITIES)[0]) => {
     setCenter(city.coords);
     setSelectedId(null);
     load(...city.coords, city.name, 1500);
   };
-  const handleMapMove = (newCenter: [number, number]) => {
-    setCenter(newCenter);
-  };
-  const handleBoundsChange = (b: Bounds) => {
-    setMapBounds(b);
-  };
+  const handleMapMove = (newCenter: [number, number]) => setCenter(newCenter);
+  const handleBoundsChange = (b: Bounds) => setMapBounds(b);
   const refreshWithinBounds = () => {
     if (!mapBounds) return refreshHere();
     const r = radiusFromBounds(mapBounds, center);
@@ -415,7 +431,7 @@ export default function App() {
     setCenter([t.lat, t.lon]);
   };
 
-  // Notifications (rappel -45 min)
+  // Notifications Golden Hour
   async function requestNotifPermission(): Promise<boolean> {
     try {
       const res = await Notification.requestPermission();
@@ -427,7 +443,7 @@ export default function App() {
   function scheduleGoldenReminder(start: Date | null, leadMin = 45) {
     if (!start) return;
     const when = start.getTime() - leadMin * 60000 - Date.now();
-    if (when <= 0) return; // trop tard
+    if (when <= 0) return;
     setTimeout(() => {
       if (document.visibilityState === "visible" && "Notification" in window) {
         new Notification("Golden Hour ☀️", {
@@ -439,7 +455,7 @@ export default function App() {
     alert("Rappel programmé : 45 min avant la Golden Hour ✨");
   }
 
-  // Écriture live dans l’URL (deep link shareable)
+  // Mise à jour URL (deep link)
   useEffect(() => {
     try {
       const p = new URLSearchParams(window.location.search);
@@ -453,9 +469,7 @@ export default function App() {
       else p.delete("min");
       const url = `${window.location.pathname}?${p.toString()}`;
       window.history.replaceState(null, "", url);
-    } catch {
-      // ignore
-    }
+    } catch {}
   }, [center, selectedId, tOffset, minScore]);
 
   const radiusLabel =
@@ -483,8 +497,14 @@ export default function App() {
       >
         <h2 style={{ margin: 0 }}>SunSeat</h2>
 
-        {/* Barre de recherche */}
-        <form onSubmit={handleSearch} style={{ margin: ".75rem 0" }}>
+        {/* Recherche */}
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (searchQuery.trim()) handleSearch(e);
+          }}
+          style={{ margin: ".75rem 0" }}
+        >
           <div style={{ display: "flex", gap: ".5rem" }}>
             <input
               type="text"
@@ -578,11 +598,7 @@ export default function App() {
           />
           <label
             htmlFor="auto-refresh"
-            style={{
-              cursor: "pointer",
-              fontSize: "0.85rem",
-              color: "#666",
-            }}
+            style={{ cursor: "pointer", fontSize: "0.85rem", color: "#666" }}
           >
             🔄 Actualisation automatique (2min)
           </label>
@@ -594,10 +610,15 @@ export default function App() {
           onToggle={(v) => {
             setGoldenEnabled(v);
             if (v) {
+              const { start, end } = computeGoldenWindow(
+                new Date(),
+                center[0],
+                center[1]
+              );
               const target =
-                goldenStart && goldenEnd
-                  ? new Date((goldenStart.getTime() + goldenEnd.getTime()) / 2)
-                  : goldenStart;
+                start && end
+                  ? new Date((start.getTime() + end.getTime()) / 2)
+                  : start;
               setTOffset(minutesBucketTo(target));
             }
           }}
@@ -616,12 +637,10 @@ export default function App() {
         {/* Sun slider */}
         <SunSlider minutes={tOffset} onChange={setTOffset} />
 
-        {/* Filtres soleil + légende */}
+        {/* Filtres */}
         <div
           style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
+            display: "grid",
             gap: ".5rem",
             marginBottom: "0.75rem",
             padding: ".6rem",
@@ -647,7 +666,155 @@ export default function App() {
               ☀️ Afficher seulement &gt; 60%
             </span>
           </label>
-          <ScoreLegend />
+
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: ".5rem",
+              cursor: "pointer",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={onlyOutdoor}
+              onChange={(e) => setOnlyOutdoor(e.target.checked)}
+              style={{ cursor: "pointer" }}
+            />
+            <span style={{ fontSize: ".85rem", color: "#444" }}>
+              🪑 Terrasse confirmée
+            </span>
+          </label>
+
+          <div style={{ justifySelf: "end" }}>
+            <ScoreLegend />
+          </div>
+        </div>
+
+        <div
+          style={{
+            display: "grid",
+            gap: ".5rem",
+            marginBottom: "0.75rem",
+            padding: ".6rem",
+            background: "#f9fafb",
+            border: "1px solid #e5e7eb",
+            borderRadius: 8,
+          }}
+        >
+          <div style={{ fontWeight: 600, fontSize: ".9rem" }}>
+            Mode de visualisation
+          </div>
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: ".5rem",
+              cursor: "pointer",
+            }}
+          >
+            <input
+              type="radio"
+              name="mapmode"
+              checked={mapMode === "bubbles"}
+              onChange={() => setMapMode("bubbles")}
+            />
+            <span>🔵 Bulles (plus clair)</span>
+          </label>
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: ".5rem",
+              cursor: "pointer",
+            }}
+          >
+            <input
+              type="radio"
+              name="mapmode"
+              checked={mapMode === "heat"}
+              onChange={() => setMapMode("heat")}
+            />
+            <span>🌡️ Heatmap (zones)</span>
+          </label>
+
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: ".5rem",
+              cursor: "pointer",
+              marginTop: 4,
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={probe}
+              onChange={(e) => setProbe(e.target.checked)}
+            />
+            <span>📍 Afficher la sonde sous le curseur</span>
+          </label>
+
+          {/* Si tu as déjà des sliders heatmap, garde-les visibles seulement en mode "heat" */}
+          {mapMode === "heat" && (
+            <div style={{ marginTop: 6 }}>
+              {/* tes sliders heatmap existants (rayon / opacité) restent ici */}
+            </div>
+          )}
+        </div>
+
+        <div
+          style={{
+            display: "grid",
+            gap: ".5rem",
+            marginBottom: "0.75rem",
+            padding: ".6rem",
+            background: "#fffbe6",
+            border: "1px dashed #facc15",
+            borderRadius: 8,
+          }}
+        >
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: ".5rem",
+              cursor: "pointer",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={showHeatmap}
+              onChange={(e) => setShowHeatmap(e.target.checked)}
+            />
+            <span style={{ fontSize: ".9rem" }}>🌡️ Afficher la heatmap</span>
+          </label>
+
+          <div style={{ display: "grid", gap: 6 }}>
+            <label style={{ fontSize: ".8rem", color: "#475569" }}>
+              Rayon d'influence : <strong>{heatRadius} m</strong>
+            </label>
+            <input
+              type="range"
+              min={80}
+              max={260}
+              step={10}
+              value={heatRadius}
+              onChange={(e) => setHeatRadius(parseInt(e.target.value, 10))}
+            />
+
+            <label style={{ fontSize: ".8rem", color: "#475569" }}>
+              Opacité : <strong>{heatOpacity}%</strong>
+            </label>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={5}
+              value={heatOpacity}
+              onChange={(e) => setHeatOpacity(parseInt(e.target.value, 10))}
+            />
+          </div>
         </div>
 
         {/* Villes de test */}
@@ -702,7 +869,7 @@ export default function App() {
           </p>
         )}
 
-        {/* Statistiques */}
+        {/* Stats */}
         <div
           style={{
             margin: "1rem 0",
@@ -712,10 +879,9 @@ export default function App() {
             fontSize: "0.85rem",
           }}
         >
-          📊 {displayed.length} terrasse
-          {displayed.length !== 1 ? "s" : ""} visible
-          {displayed.length !== 1 ? "s" : ""}{" "}
-          {minScore >= 60 && "(filtre >60%)"}
+          📊 {displayed.length} terrasse{displayed.length !== 1 ? "s" : ""}{" "}
+          visible{displayed.length !== 1 ? "s" : ""}{" "}
+          {minScore >= 60 && "(>60%)"} {onlyOutdoor && "• terrasses confirmées"}
           <br />
           🕒 Vue: <strong>{timeLabel}</strong>
           {displayed.length > 0 && (
@@ -728,7 +894,7 @@ export default function App() {
           )}
         </div>
 
-        {/* Liste (cards cliquables) */}
+        {/* Liste */}
         <div style={{ display: "grid", gap: ".8rem", marginTop: "1rem" }}>
           {displayed.length === 0 && !loading && (
             <div
@@ -744,9 +910,9 @@ export default function App() {
               😔 Aucune terrasse trouvée
               <br />
               <small>
-                {minScore >= 60
-                  ? "Désactivez le filtre >60% ou élargissez la zone."
-                  : "Essayez une autre ville ou ‘Rechercher dans cette zone’"}
+                {minScore >= 60 || onlyOutdoor
+                  ? "Assouplis les filtres ou élargis la zone."
+                  : "Essaie une autre ville ou ‘Rechercher dans cette zone’"}
               </small>
             </div>
           )}
@@ -764,7 +930,7 @@ export default function App() {
         </div>
       </aside>
 
-      {/* Carte + bouton Rechercher dans cette zone */}
+      {/* Carte + bouton bounds */}
       <main style={{ position: "relative" }}>
         <div style={{ position: "absolute", top: 12, right: 12, zIndex: 1000 }}>
           <button
@@ -790,6 +956,11 @@ export default function App() {
           onMapMove={handleMapMove}
           onBoundsChange={handleBoundsChange}
           selectedId={selectedId}
+          showHeatmap={showHeatmap}
+          heatRadius={heatRadius}
+          heatOpacity={Math.max(0, Math.min(1, heatOpacity / 100))}
+          mode={mapMode}
+          probe={probe}
         />
       </main>
     </div>

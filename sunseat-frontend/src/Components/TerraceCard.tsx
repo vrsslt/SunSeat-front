@@ -1,5 +1,5 @@
-import React from "react";
 import type { NearbyItem } from "../types";
+import type { ReactNode } from "react";
 import ForecastBar from "./ForecastBar";
 import ChipScore from "./ChipScore";
 import ComfortChip from "./ComfortChip";
@@ -33,7 +33,6 @@ type Props = {
   onSelect?: () => void;
   selected?: boolean;
   metaWeather?: MetaWeather;
-  // pour fabriquer un deep link fidèle à l’état courant (tOffset/minScore/center)
   shareContext?: { center: [number, number]; t: number; min: number };
 };
 
@@ -66,13 +65,13 @@ export default function TerraceCard({
   );
 
   // Tip Forecast
-  let tip: React.ReactElement | null = null;
+  let tip: ReactNode = null;
   if (Array.isArray(t.forecast) && t.forecast.length > 0) {
     const horizon = t.forecast
       .filter((f) => typeof f?.tmin === "number" && f.tmin >= 0)
       .slice(0, 10);
     const peak = horizon.reduce<{ tmin: number; score: number }>(
-      (acc, f: any) => {
+      (acc, f: { tmin: number; score: number }) => {
         const s = Math.round(Number(f?.score ?? 0));
         const tm = Math.round(Number(f?.tmin ?? 0));
         return s > acc.score ? { tmin: tm, score: s } : acc;
@@ -122,9 +121,11 @@ export default function TerraceCard({
 
   async function sharePlace(e: React.MouseEvent) {
     e.stopPropagation();
+
+    // 👉 centre le deep link sur LA TERRASSE partagée
     const url = buildDeepLink({
-      lat: shareContext?.center?.[0] ?? t.lat,
-      lon: shareContext?.center?.[1] ?? t.lon,
+      lat: t.lat,
+      lon: t.lon,
       id: t.id,
       t: shareContext?.t ?? 0,
       min: shareContext?.min ?? 0,
@@ -135,23 +136,61 @@ export default function TerraceCard({
       "Viens chiller ici ☀️ Je te partage une terrasse avec un bon ensoleillement.";
 
     try {
-      const navAny = navigator as any;
-      if (navAny.share) {
-        await navAny.share({ title, text, url });
-      } else {
-        await navigator.clipboard.writeText(url);
-        alert("Lien copié ✅");
+      const nav = window.navigator as Navigator & {
+        clipboard?: { writeText?: (t: string) => Promise<void> };
+        share?: (data: {
+          title?: string;
+          text?: string;
+          url?: string;
+        }) => Promise<void>;
+      };
+      if (nav.share) {
+        await nav.share({ title, text, url });
+        return;
       }
+      if (window.isSecureContext && nav.clipboard?.writeText) {
+        await nav.clipboard.writeText(url);
+        alert("Lien copié ✅");
+        return;
+      }
+      const ta = document.createElement("textarea");
+      ta.value = url;
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      alert("Lien copié ✅");
     } catch {
-      try {
-        await navigator.clipboard.writeText(url);
-        alert("Lien copié ✅");
-      } catch {
-        // dernier fallback : ouvre un prompt
-        prompt("Copie ce lien :", url);
-      }
+      prompt("Copie ce lien :", url);
     }
   }
+
+  const terraceBadge =
+    typeof t.terraceConfidence === "number" ? (
+      <span
+        title={
+          t.hasOutdoor
+            ? `Terrasse confirmée OSM (${Math.round(
+                (t.terraceConfidence || 0) * 100
+              )}%)`
+            : `Terrasse non confirmée OSM (${Math.round(
+                (t.terraceConfidence || 0) * 100
+              )}%)`
+        }
+        style={{
+          fontSize: 11,
+          padding: "2px 6px",
+          borderRadius: 999,
+          border: "1px solid #ddd",
+          background: t.hasOutdoor ? "#ecfdf5" : "#f8fafc",
+          color: t.hasOutdoor ? "#065f46" : "#475569",
+        }}
+      >
+        🪑 {Math.round((t.terraceConfidence || 0) * 100)}%
+      </span>
+    ) : null;
 
   return (
     <button
@@ -186,20 +225,28 @@ export default function TerraceCard({
         <div style={{ fontWeight: 700, fontSize: 14, lineHeight: "20px" }}>
           {t.name || "Sans nom"}
         </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            flexWrap: "wrap",
+            alignItems: "center",
+          }}
+        >
+          {terraceBadge}
           <ChipScore score={t.sunScore ?? 0} />
           <ComfortChip score={cScore} />
         </div>
       </div>
 
       <div style={{ color: "#64748b", fontSize: 12, marginTop: 4 }}>
-        {distance} • orient. {orient} • {street}
+        {distance} • orient. {orient} • {street}{" "}
         {t.amenity ? ` • ${t.amenity}` : ""}
       </div>
 
       {Array.isArray(t.forecast) && t.forecast.length > 0 && (
         <div style={{ marginTop: 8 }}>
-          <ForecastBar data={t.forecast as any} />
+          <ForecastBar data={t.forecast} selected={0} />
           <div style={{ fontSize: 12, color: "#475569", marginTop: 6 }}>
             {tip}
           </div>
